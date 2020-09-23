@@ -1,28 +1,27 @@
 language: rust
+
 rust:
-  - stable
-  - beta
-  - nightly
-
+- stable
+- beta
+- nightly
 os:
-  - linux
-  - osx
-  - windows
-
+- linux
+- osx
+- windows
 dist: bionic
 
 addons:
   apt:
     packages:
-      - libssl-dev
+    - libssl-dev
 
 env:
-  - TARPAULIN_VERSION: "0.12.4"
+- TARPAULIN_VERSION: 0.12.4
 
 matrix:
   fast_finish: true
   allow_failures:
-    - rust: nightly
+  - rust: nightly
 
 cache: cargo
 before_cache: chmod -R a+r $HOME/.cargo $TRAVIS_BUILD_DIR/target
@@ -32,15 +31,19 @@ before_script: |
     wget https://github.com/xd009642/tarpaulin/releases/download/$TARPAULIN_VERSION/cargo-tarpaulin-$TARPAULIN_VERSION-travis.tar.gz
     tar xfz cargo-tarpaulin-$TARPAULIN_VERSION-travis.tar.gz && mv cargo-tarpaulin $HOME/.cargo/bin
   fi
-
 script: |
   if [[ "$TRAVIS_OS_NAME" == linux && "$TRAVIS_RUST_VERSION" == stable ]]; then
     cargo tarpaulin --out Xml
   else
     cargo test
   fi
+  
+after_success: if [[ "$TRAVIS_OS_NAME" == linux && "$TRAVIS_RUST_VERSION" == stable
+  ]]; then bash <(curl -s https://codecov.io/bash) fi
 
-after_success:
-  if [[ "$TRAVIS_OS_NAME" == linux && "$TRAVIS_RUST_VERSION" == stable ]]; then
-    bash <(curl -s https://codecov.io/bash)
-  fi
+deploy:
+  provider: cargo
+  token:
+    secure: jwZYGZk8WZfX2OMYMfPqGQpMqqc6Ad6cCcP21AnfvHtL+dw7T0nshuE8qBHmtLBCYIxKlDBc7bSB4ZWEC9ZX8xxeCppclttfm+bnhnJYizVmfVmAhnK66lEGrBjFIc/pTFjB/wtS+lXEi1EeI/9oJQgHbuFgrrYKoqdzvi4aR14BKtbvzfTYp4xduZxu124lF+fvoIquK+J2NjlkPR1xkQ8CuCZxmXZi1BpvgJzSi3EgnFJ+R43AuNMZ26iLXyS2HaT4LUq7tWsOtAEgb6zFrF8YGYyff7bxQv4gNgE1kPkT70Wk6DMgbYDjMhgpEH3DJuYQImnjqsS/8WiV9I5yeyQHuy8/DVLkjLMLvqnHa2AHcxTFBcpbcq5WECnzr5LzaXsfeuMlOqiIO/Llb4GafmZKSSN2h59RZHztn0WLdRaHRsK6z9RejIDAl+q2mo1I2AGsfCOSR3VYM+qkzrq1gBH24ctLPyaWZs2VhKJ2AjyPrDfHRz0os6qNS8ZndO32mWAUkvLYwILM7xMP62KKB91P3khRavJYet16kVtXlCrSgTr+izGuanazOFkxyWg+9qUX0qFg2n81d9WYopeIbzd/lMRdlSSLG5DLV42vc0HD7nomGEEzuIIrx6f6/5VYUdv7Zi6Fc+gyHRy9QwgGzXd8undQ82qp+E7uTsNVKIk=
+  on:
+    tags: true
