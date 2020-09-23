@@ -16,7 +16,7 @@ addons:
     - libssl-dev
 
 env:
-- TARPAULIN_VERSION: 0.12.4
+- TARPAULIN_VERSION=0.12.4
 
 matrix:
   fast_finish: true
@@ -37,7 +37,7 @@ script: |
   else
     cargo test
   fi
-  
+
 after_success: if [[ "$TRAVIS_OS_NAME" == linux && "$TRAVIS_RUST_VERSION" == stable
   ]]; then bash <(curl -s https://codecov.io/bash) fi
 
