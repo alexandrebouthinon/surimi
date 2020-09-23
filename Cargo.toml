@@ -1,0 +1,27 @@
+[package]
+name = "surimi"
+version = "0.1.0"
+authors = ["Alexandre Bouthinon <bouthinon.alexandre@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies.async-tungstenite]
+version = "^0.5"
+features = ["async-std-runtime"]
+
+[dependencies.async-std]
+version = "1.6.0"
+features = ["attributes"]
+
+[dependencies.futures-util]
+version = "0.3"
+default-features = false
+features = ["async-await", "sink", "std"]
+
+[dependencies.serde_json]
+version = "^1.0"
+
+[devDependencies.async-std]
+version = "1.6.0"
+default_features = false
+features = ["attributes"]
