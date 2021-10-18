@@ -1,93 +1,227 @@
 use async_std::net::TcpListener;
 use async_std::task;
 use async_tungstenite::tungstenite::protocol::Message;
-use futures_util::{sink::SinkExt, stream::StreamExt};
-use serde_json::{json, Value};
+use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
+use serde_json::Value;
 use std::error::Error;
+use url::Url;
 
+#[derive(Clone)]
+pub enum ConnectionType {
+    WebSocket,
+    Http,
+}
+
+#[derive(Clone)]
+pub struct MockServerOptions {
+    pub host: String,
+    pub port: u16,
+    pub connection_type: ConnectionType,
+}
+
+impl Default for MockServerOptions {
+    /// Create MockServerOptions with default values.
+    /// Default values are:
+    /// - host: "localhost"
+    /// - port: 8080
+    /// - connection_type: ConnectionType::WebSocket
+    ///
+    /// # Examples
+    /// ```
+    /// use surimi::MockServerOptions;
+    ///
+    /// let options = MockServerOptions::default();
+    /// ```
+    fn default() -> Self {
+        Self {
+            host: "localhost".into(),
+            port: 0,
+            connection_type: ConnectionType::WebSocket,
+        }
+    }
+}
+
+/// MockServer is a mock server that can be used to test your application.
+/// It can be used to test WebSocket connections.
+///
+/// # Examples
+/// ```
+/// use surimi::MockServer;
+/// use async_std::stream::StreamExt;
+/// use futures_util::sink::SinkExt;
+/// use async_tungstenite::tungstenite::protocol::Message;
+/// use serde_json::json;
+/// use serde_json::from_str;
+/// use serde_json::Value;
+///
+/// # #[async_std::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let endpoint = MockServer::default()
+///         .responses(vec![
+///             json!({"hello": "world"}),
+///         ])
+///         .start()
+///         .await?;
+///
+///     assert_eq!(endpoint.host_str().unwrap(), "localhost");
+///     assert_ne!(endpoint.port().unwrap(), 0); // the port should be pick randomly by the OS
+///
+///     let (mut stream, _) = async_tungstenite::async_std::connect_async(endpoint).await?;
+///     stream
+///         .send(Message::Text("hello".into()))
+///         .await?;
+///
+///     let json_response : Value =
+///         serde_json::from_str(&stream.next().await.unwrap()?.into_text()?)?;
+///
+///     assert_eq!(json_response, json!({"hello": "world"}));
+///
+///     stream.close(None).await?;
+///
+/// #   Ok(())
+/// # }
+/// ```
+///
 pub struct MockServer {
-    responses: Vec<Value>,
+    pub responses: Vec<Value>,
+    pub options: MockServerOptions,
+}
+
+impl Default for MockServer {
+    fn default() -> Self {
+        Self {
+            responses: vec![],
+            options: MockServerOptions::default(),
+        }
+    }
 }
 
 impl MockServer {
-    pub fn new() -> Self {
-        MockServer { responses: vec![] }
-    }
-
-    pub fn respond_with(mut self, responses: Vec<Value>) -> Self {
-        for response in responses {
-            self.responses.push(json!(response));
-        }
+    pub fn host(mut self, host: String) -> Self {
+        self.options.host = host;
         self
     }
 
-    pub async fn then_start(self) -> Result<(&'static str, u16), Box<dyn Error>> {
-        let socket = TcpListener::bind("localhost:0").await?;
-        let port = socket.local_addr()?.port();
+    pub fn port(mut self, port: u16) -> Self {
+        self.options.port = port;
+        self
+    }
+
+    pub fn responses(mut self, responses: Vec<Value>) -> Self {
+        self.responses = responses;
+        self
+    }
+
+    pub async fn start(self) -> Result<Url, Box<dyn Error>> {
+        let listener =
+            TcpListener::bind(format!("{}:{}", &self.options.host, &self.options.port)).await?;
+
+        let port = listener.local_addr()?.port();
+        let host = String::from(&self.options.host);
+
         task::spawn(async move {
-            let (stream, _) = socket
-                .accept()
-                .await
-                .expect("Failed to accept inbound TCP connection");
-            let mut ws_stream = async_tungstenite::accept_async(&stream)
-                .await
-                .expect("Failed to open WebSocket stream");
-            let mut messages = self.responses.clone().into_iter();
-            while let Some(Ok(incomming_msg)) = ws_stream.next().await {
-                if !incomming_msg.is_close() {
-                    if let Some(message) = messages.next() {
-                        let msg: String = serde_json::to_string(&message).unwrap();
-                        ws_stream.send(Message::Text(msg)).await.unwrap();
-                    } else {
-                        return;
+            match self.options.connection_type {
+                ConnectionType::WebSocket => self.ws_handler(&listener).await.unwrap(),
+                ConnectionType::Http => self.http_handler(&listener).await.unwrap(),
+            };
+        });
+
+        Ok(Url::parse(&format!("ws://{}:{}", host, port))?)
+    }
+
+    async fn ws_handler(mut self, listener: &TcpListener) -> Result<(), Box<dyn Error>> {
+        let mut incoming = listener.incoming();
+        while let Some(stream) = incoming.next().await {
+            let stream = stream?;
+            let mut socket = async_tungstenite::accept_async(stream).await?;
+            while let Some(message) = socket.next().await {
+                let message = message?;
+                match message {
+                    Message::Text(_) => {
+                        let response = self.responses.remove(0);
+                        socket
+                            .send(Message::Text(serde_json::to_string(&response)?))
+                            .await?;
                     }
+                    Message::Close(_) => return Ok(()),
+                    _ => {}
                 }
             }
-        });
-        Ok(("localhost", port))
+        }
+        Ok(())
+    }
+
+    async fn http_handler(self, _listener: &TcpListener) -> Result<(), Box<dyn Error>> {
+        todo!()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[async_std::test]
     async fn connect() -> Result<(), Box<dyn Error>> {
-        let (host, port) = MockServer::new().then_start().await?;
-        let (_, _) =
-            async_tungstenite::async_std::connect_async(format!("ws://{}:{}", host, port)).await?;
-            
+        let endpoint: Url = MockServer::default().start().await?;
+
+        assert_eq!(endpoint.host_str().unwrap(), "localhost");
+        assert_ne!(endpoint.port().unwrap(), 0); // the port should be pick randomly by the OS
+
+        let (mut stream, _) = async_tungstenite::async_std::connect_async(endpoint).await?;
+        stream.close(None).await?;
+
         Ok(())
     }
 
     #[async_std::test]
-    async fn with_json_responses() -> Result<(), Box<dyn Error>> {
-        let responses = vec![
-            json!({"Response": 1}),
-            json!({"Response": 2}),
-            json!({"Response": 3}),
-        ];
-        let (host, port) = MockServer::new()
-            .respond_with(responses.clone())
-            .then_start()
+    async fn connect_with_custom_config() -> Result<(), Box<dyn Error>> {
+        let endpoint = MockServer::default()
+            .host("127.0.0.1".into())
+            .port(8080)
+            .start()
             .await?;
-        let (mut client, _) =
-            async_tungstenite::async_std::connect_async(format!("ws://{}:{}", host, port)).await?;
 
-        for mocked_response in responses.clone() {
-            client
+        assert_eq!(endpoint.host_str().unwrap(), "127.0.0.1");
+        assert_eq!(endpoint.port().unwrap(), 8080);
+
+        let (mut stream, _) = async_tungstenite::async_std::connect_async(endpoint).await?;
+        stream.close(None).await?;
+
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn connect_and_answer() -> Result<(), Box<dyn Error>> {
+        let mocked_responses = vec![
+            json!({"hello": "world"}),
+            json!({"hello": "france"}),
+            json!({"hello": "montpellier"}),
+        ];
+
+        let endpoint = MockServer::default()
+            .responses(mocked_responses.clone())
+            .start()
+            .await?;
+
+        assert_eq!(endpoint.host_str().unwrap(), "localhost");
+        assert_ne!(endpoint.port().unwrap(), 0); // the port should be pick randomly by the OS
+
+        let (mut stream, _) = async_tungstenite::async_std::connect_async(endpoint).await?;
+
+        for m_response in mocked_responses {
+            stream
                 .send(Message::Text(String::from("Trigger mocked server reply")))
                 .await?;
 
             let response: Value =
-                serde_json::from_str(&client.next().await.unwrap()?.into_text()?)?;
+                serde_json::from_str(&stream.next().await.unwrap()?.into_text()?)?;
 
-            assert_eq!(
-                serde_json::from_value::<u8>(mocked_response["Response"].clone())?,
-                serde_json::from_value::<u8>(response["Response"].clone())?
-            );
+            assert_eq!(response, m_response);
+            assert_eq!(response["hello"], m_response["hello"]);
         }
+        stream.close(None).await?;
 
         Ok(())
     }
