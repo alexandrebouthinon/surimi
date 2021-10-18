@@ -136,7 +136,11 @@ impl MockServer {
             let stream = stream?;
             let mut socket = async_tungstenite::accept_async(stream).await?;
             while let Some(message) = socket.next().await {
-                let message = message?;
+                let message = match message {
+                    Ok(message) => message,
+                    Err(_) => continue, // Useful to test non responding server scenarios
+                };
+
                 match message {
                     Message::Text(_) => {
                         let response = self.responses.remove(0);
