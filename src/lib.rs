@@ -7,16 +7,9 @@ use serde_json::Value;
 use std::error::Error;
 
 #[derive(Clone)]
-pub enum ConnectionType {
-    WebSocket,
-    Http,
-}
-
-#[derive(Clone)]
 pub struct MockServerOptions {
     pub host: String,
     pub port: u16,
-    pub connection_type: ConnectionType,
 }
 
 impl Default for MockServerOptions {
@@ -24,7 +17,6 @@ impl Default for MockServerOptions {
     /// Default values are:
     /// - host: "localhost"
     /// - port: 8080
-    /// - connection_type: ConnectionType::WebSocket
     ///
     /// # Examples
     /// ```
@@ -36,7 +28,6 @@ impl Default for MockServerOptions {
         Self {
             host: "localhost".into(),
             port: 0,
-            connection_type: ConnectionType::WebSocket,
         }
     }
 }
@@ -121,10 +112,7 @@ impl MockServer {
         let host = String::from(&self.options.host);
 
         task::spawn(async move {
-            match self.options.connection_type {
-                ConnectionType::WebSocket => self.ws_handler(&listener).await.unwrap(),
-                ConnectionType::Http => self.http_handler(&listener).await.unwrap(),
-            };
+            self.ws_handler(&listener).await.unwrap();
         });
 
         Ok((host, port))
@@ -135,12 +123,11 @@ impl MockServer {
         while let Some(stream) = incoming.next().await {
             let stream = stream?;
             let mut socket = async_tungstenite::accept_async(stream).await?;
-            while let Some(message) = socket.next().await {
-                let message = match message {
-                    Ok(message) => message,
-                    Err(_) => continue, // Useful to test non responding server scenarios
+            loop {
+                let message = match socket.next().await {
+                    Some(message) => message?,
+                    None => continue,
                 };
-
                 match message {
                     Message::Text(_) => {
                         let response = self.responses.remove(0);
@@ -148,16 +135,12 @@ impl MockServer {
                             .send(Message::Text(serde_json::to_string(&response)?))
                             .await?;
                     }
-                    Message::Close(_) => return Ok(()),
+                    Message::Close(_) => break,
                     _ => {}
                 }
             }
         }
         Ok(())
-    }
-
-    async fn http_handler(self, _listener: &TcpListener) -> Result<(), Box<dyn Error>> {
-        todo!()
     }
 }
 
@@ -179,8 +162,8 @@ mod tests {
 
         let (mut stream, _) =
             async_tungstenite::async_std::connect_async(endpoint(&host, port)).await?;
-        stream.close(None).await?;
 
+        stream.close(None).await?;
         Ok(())
     }
 
@@ -197,8 +180,8 @@ mod tests {
 
         let (mut stream, _) =
             async_tungstenite::async_std::connect_async(endpoint(&host, port)).await?;
-        stream.close(None).await?;
 
+        stream.close(None).await?;
         Ok(())
     }
 
@@ -232,8 +215,8 @@ mod tests {
             assert_eq!(response, m_response);
             assert_eq!(response["hello"], m_response["hello"]);
         }
-        stream.close(None).await?;
 
+        stream.close(None).await?;
         Ok(())
     }
 }
