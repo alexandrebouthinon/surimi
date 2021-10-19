@@ -100,7 +100,9 @@ impl MockServer {
     }
 
     pub fn responses(mut self, responses: Vec<Value>) -> Self {
-        self.responses = responses;
+        let mut r = responses.clone();
+        r.reverse(); // handler use Vec.pop() to get the last response
+        self.responses = r;
         self
     }
 
@@ -118,21 +120,22 @@ impl MockServer {
         Ok((host, port))
     }
 
-    async fn ws_handler(mut self, listener: &TcpListener) -> Result<(), Box<dyn Error>> {
+    async fn ws_handler(self, listener: &TcpListener) -> Result<(), Box<dyn Error>> {
         let mut incoming = listener.incoming();
         while let Some(stream) = incoming.next().await {
             let stream = stream?;
             let mut socket = async_tungstenite::accept_async(stream).await?;
-            loop {
-                let message = match socket.next().await {
-                    Some(message) => message?,
-                    None => continue,
-                };
-                match message {
+            let mut responses = self.responses.clone();
+
+            while let Some(message) = socket.next().await {
+                match message? {
                     Message::Text(_) => {
-                        let response = self.responses.remove(0);
+                        if let Some(response) = responses.pop() {
+                            socket.send(Message::Text(response.to_string())).await?;
+                            continue;
+                        }
                         socket
-                            .send(Message::Text(serde_json::to_string(&response)?))
+                            .send(Message::Text("No more response".into()))
                             .await?;
                     }
                     Message::Close(_) => break,
@@ -151,6 +154,13 @@ mod tests {
 
     fn endpoint(host: &str, port: u16) -> String {
         format!("ws://{}:{}", host, port)
+    }
+
+    #[async_std::test]
+    #[should_panic]
+    async fn should_panic_if_same_port_used_twice() {
+        let (_, _) = MockServer::default().port(8080).start().await.unwrap();
+        let (_, _) = MockServer::default().port(8080).start().await.unwrap();
     }
 
     #[async_std::test]
@@ -180,6 +190,43 @@ mod tests {
 
         let (mut stream, _) =
             async_tungstenite::async_std::connect_async(endpoint(&host, port)).await?;
+
+        stream.close(None).await?;
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn should_answer_pong() -> Result<(), Box<dyn Error>> {
+        let (host, port) = MockServer::default().start().await?;
+
+        let (mut stream, _) =
+            async_tungstenite::async_std::connect_async(endpoint(&host, port)).await?;
+
+        stream.send(Message::Ping("Some request".into())).await?;
+
+        let response = stream.next().await.unwrap()?;
+        assert_eq!(
+            response,
+            Message::Pong("Some request".into()),
+            "should answer with pong"
+        );
+
+        stream.close(None).await?;
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn should_wait_for_close_message() -> Result<(), Box<dyn Error>> {
+        let (host, port) = MockServer::default().start().await?;
+
+        let (mut stream, _) =
+            async_tungstenite::async_std::connect_async(endpoint(&host, port)).await?;
+
+        for _ in 0..10 {
+            stream.send(Message::Text("Some request".into())).await?;
+            let response = stream.next().await.unwrap()?;
+            assert_eq!(response, Message::Text("No more response".into()),);
+        }
 
         stream.close(None).await?;
         Ok(())
